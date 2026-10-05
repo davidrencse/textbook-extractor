@@ -1,0 +1,26 @@
+{
+  "manifest_version": 2,
+  "name": "Page to Clipboard",
+  "version": "1.1.0",
+  "description": "Copy loaded page text and images, or open a clean printable / Save-as-PDF page, including textbook reader frames.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "page-to-clipboard@local.invalid",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  },
+  "permissions": ["activeTab", "<all_urls>", "clipboardWrite", "contextMenus", "notifications"],
+  "background": { "scripts": ["background.js"] },
+  "browser_action": {
+    "default_title": "Copy page text and images",
+    "default_icon": "icon.svg"
+  },
+  "icons": { "48": "icon.svg", "96": "icon.svg" },
+  "commands": {
+    "_execute_browser_action": {
+      "suggested_key": { "default": "Alt+Shift+C" },
+      "description": "Copy page text and images"
+    }
+  }
+}

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Printable page</title>
+  <style>
+    :root {
+      --ink: #1a1a1a;
+      --muted: #5c5c5c;
+      --line: #e2e2e2;
+      --accent: #175b49;
+      --bg: #f6f6f4;
+      --paper: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font: 17px/1.65 Georgia, "Times New Roman", serif;
+      -webkit-text-size-adjust: 100%;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 20px;
+      background: rgba(246, 246, 244, 0.92);
+      backdrop-filter: saturate(140%) blur(6px);
+      border-bottom: 1px solid var(--line);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .toolbar button {
+      font: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1;
+      padding: 9px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--ink);
+      cursor: pointer;
+      transition: border-color .15s, background .15s, transform .05s;
+    }
+    .toolbar button:hover { border-color: #c7c7c7; }
+    .toolbar button:active { transform: translateY(1px); }
+    .toolbar button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .toolbar button:disabled { opacity: .5; cursor: default; }
+    .toolbar .status {
+      font-size: 13px;
+      color: var(--muted);
+      margin-left: auto;
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 40px 24px 96px;
+      background: var(--paper);
+      min-height: 100vh;
+      box-shadow: 0 1px 40px rgba(0,0,0,.05);
+    }
+    main :first-child { margin-top: 0; }
+    h1 { font-size: 1.9rem; line-height: 1.2; }
+    h2 { font-size: 1.4rem; margin-top: 2em; }
+    h3 { font-size: 1.15rem; }
+    p { margin: 0 0 1em; }
+    img { max-width: 100%; height: auto; display: block; margin: 1.2em auto; }
+    figure { margin: 1.4em 0; }
+    figcaption { font-size: .9em; color: var(--muted); text-align: center; }
+    a { color: var(--accent); }
+    table { border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: .95em; }
+    th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+    blockquote { margin: 1.2em 0; padding-left: 1em; border-left: 3px solid var(--line); color: var(--muted); }
+    pre, code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+    pre { background: #f0f0ee; padding: 12px; border-radius: 6px; overflow-x: auto; }
+    /* Source line that background.js prepends (an h1 + "Source:" paragraph). */
+    main > p:nth-of-type(1) { color: var(--muted); font-size: .85em; word-break: break-all; }
+    .empty { color: var(--muted); font-style: italic; }
+    @media print {
+      :root { --bg: #fff; }
+      body { background: #fff; font-size: 12pt; }
+      .toolbar { display: none !important; }
+      main {
+        max-width: none;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+        min-height: 0;
+      }
+      a { color: inherit; text-decoration: none; }
+      img, figure, table, blockquote, pre { break-inside: avoid; page-break-inside: avoid; }
+      h1, h2, h3 { break-after: avoid; page-break-after: avoid; }
+    }
+    @page { margin: 18mm 16mm; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="print" class="primary" type="button">Print / Save as PDF</button>
+    <button id="copy" type="button">Copy all</button>
+    <span id="status" class="status" role="status" aria-live="polite">Loading…</span>
+  </div>
+  <main id="content"></main>
+  <script src="reader.js"></script>
+</body>
+</html>
