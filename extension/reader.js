@@ -1,8 +1,17 @@
-/* global browser */
+/* global browser, chrome */
 "use strict";
-// Renders the content the background page extracted from the source tab. The markup is
+// Renders the content the background extracted from the source tab. The markup is
 // already an allowlisted, inert tree (no scripts, no event handlers) built by extract.js,
 // so this page carries none of the source site's print-blocking CSS or beforeprint handlers.
+//
+// The payload is handed over differently depending on the browser engine:
+//  - Chromium (MV3 service worker): stored in storage.session, because the worker may be
+//    torn down between opening this tab and this script running. storage.session is in
+//    memory only, never written to disk.
+//  - Firefox/Zen (MV2 persistent background): requested from the still-alive background
+//    page by message, the original mechanism. (Firefox here has no `storage` permission,
+//    so the session branch is simply skipped.)
+const api = globalThis.browser ?? globalThis.chrome;
 (async () => {
   const content = document.getElementById("content");
   const statusEl = document.getElementById("status");
@@ -23,11 +32,24 @@
   if (!token) { fail("No content token. Reopen the printable page from the extension button."); return; }
 
   let doc;
-  try {
-    doc = await browser.runtime.sendMessage({ type: "getDoc", token });
-  } catch {
-    fail("Could not reach the extension. Reopen the printable page from the toolbar button.");
-    return;
+  if (api.storage?.session) {
+    // Chromium path: single-use read from session storage.
+    try {
+      const stored = await api.storage.session.get(token);
+      doc = stored?.[token] || null;
+      if (doc) await api.storage.session.remove(token);
+    } catch {
+      fail("Could not read the extracted content. Reopen the printable page from the toolbar button.");
+      return;
+    }
+  } else {
+    // Firefox/Zen path: ask the persistent background page for the payload.
+    try {
+      doc = await api.runtime.sendMessage({ type: "getDoc", token });
+    } catch {
+      fail("Could not reach the extension. Reopen the printable page from the toolbar button.");
+      return;
+    }
   }
   if (!doc) { fail("This page's content has expired or was already opened. Extract it again."); return; }
 

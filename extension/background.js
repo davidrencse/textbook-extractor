@@ -76,10 +76,21 @@ async function writeRich(html, text) {
   } finally { document.removeEventListener("copy", listener); }
 }
 async function assemble(tab, textOnly) {
+  await browser.tabs.executeScript(tab.id, { code: `globalThis.__pageToClipboardTextOnly = ${Boolean(textOnly)};`, allFrames: true, matchAboutBlank: true, runAt: "document_idle" });
   const results = await browser.tabs.executeScript(tab.id, { file: "extract.js", allFrames: true, matchAboutBlank: true, runAt: "document_idle" });
   const frames = results.filter(r => r && (r.text || r.images.length));
   if (!frames.length) throw new Error("No readable content found. Right-click the toolbar button and choose Copy visible page as image.");
   const warnings = new Set(frames.flatMap(f => f.warnings));
+  if (textOnly) {
+    const seen = new Set();
+    const texts = frames.filter(frame => {
+      const key = frame.url + "\n" + frame.text;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).map(frame => frame.text);
+    return { article: null, text: `${tab.title || "Copied page"}\nSource: ${tab.url}\n\n${texts.join("\n\n")}`.trim(), warnings, imageCount: 0 };
+  }
   const article = document.createElement("article");
   const heading = document.createElement("h1");
   heading.textContent = tab.title || "Copied page";
@@ -104,11 +115,12 @@ async function assemble(tab, textOnly) {
     const parsed = new DOMParser().parseFromString(frame.html, "text/html");
     section.append(...parsed.body.childNodes);
     const placeholders = [...section.querySelectorAll("img[data-clip-image]")];
-    for (let offset = 0; offset < placeholders.length; offset += 4) {
-      await Promise.all(placeholders.slice(offset, offset + 4).map(async img => {
+    let nextImage = 0;
+    await Promise.all(Array.from({ length: Math.min(4, placeholders.length) }, async () => {
+      while (nextImage < placeholders.length) {
+        const img = placeholders[nextImage++];
         const meta = frame.images[Number(img.getAttribute("data-clip-image"))];
         img.removeAttribute("data-clip-image");
-        if (textOnly) { img.replaceWith(document.createTextNode(`[Image: ${meta.alt}]`)); return; }
         try {
           if (totalBytes >= MAX_TOTAL_BYTES) throw new Error("Clipboard size limit reached");
           let data = meta.embedded;
@@ -125,8 +137,8 @@ async function assemble(tab, textOnly) {
           failedImages++;
           img.replaceWith(document.createTextNode(`[Image unavailable: ${meta.alt}]`));
         }
-      }));
-    }
+      }
+    }));
     article.append(section);
   }
   if (failedImages) warnings.add(`${failedImages} image(s) could not be embedded. Try Copy visible page as image.`);

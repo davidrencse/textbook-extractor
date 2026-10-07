@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Page to Clipboard",
+  "version": "1.1.0",
+  "description": "Copy loaded page text and images, or open a clean printable / Save-as-PDF page, including textbook reader frames.",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "clipboardWrite", "contextMenus", "notifications", "storage", "offscreen"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "Copy page text and images",
+    "default_icon": "icon.svg"
+  },
+  "icons": { "48": "icon.svg", "96": "icon.svg" },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+C" },
+      "description": "Copy page text and images"
+    }
+  }
+}

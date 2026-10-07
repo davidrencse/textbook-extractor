@@ -1,5 +1,7 @@
 /* Executed only on request, once per permitted frame. No page code is modified. */
 (async () => {
+  const textOnly = globalThis.__pageToClipboardTextOnly === true;
+  delete globalThis.__pageToClipboardTextOnly;
   if (!document.body || document.visibilityState === "hidden") return null;
   try {
     if (window.frameElement && !window.frameElement.getClientRects().length) return null;
@@ -15,8 +17,10 @@
   const images = [];
   let visited = 0;
   let embeddedBytes = 0;
-  const out = document.implementation.createHTMLDocument("");
-  const holder = out.createElement("div");
+  let embeddingFull = false;
+  const textParts = [];
+  const out = textOnly ? null : document.implementation.createHTMLDocument("");
+  const holder = out?.createElement("div");
   const visible = el => {
     const style = getComputedStyle(el);
     return !el.hidden && el.getAttribute("aria-hidden") !== "true" && style.display !== "none" && style.visibility !== "hidden" && style.visibility !== "collapse" && style.opacity !== "0";
@@ -32,6 +36,7 @@
     } catch { return ""; }
   };
   function png(element) {
+    if (embeddingFull) return "";
     const w = element.naturalWidth || element.width?.baseVal?.value || element.width || element.clientWidth;
     const h = element.naturalHeight || element.height?.baseVal?.value || element.height || element.clientHeight;
     if (!w || !h || w * h > MAX_RASTER_PIXELS) return "";
@@ -45,8 +50,10 @@
   }
   function addImage(parent, source, alt, embedded = "") {
     if (images.length >= MAX_IMAGES) { warnings.add("Image limit reached (100 per frame)."); return; }
-    if (embedded.length > 12 * 1024 * 1024 || embeddedBytes + embedded.length > 24 * 1024 * 1024) embedded = "";
+    if (embedded.length > 12 * 1024 * 1024) embedded = "";
+    if (embeddedBytes + embedded.length > 24 * 1024 * 1024) { embeddingFull = true; embedded = ""; }
     embeddedBytes += embedded.length;
+    if (embeddedBytes >= 24 * 1024 * 1024) embeddingFull = true;
     if (!source && !embedded) { warnings.add("An image or canvas could not be read; try Copy visible page as image."); return; }
     const img = out.createElement("img");
     img.setAttribute("data-clip-image", String(images.length));
@@ -56,11 +63,26 @@
   }
   async function walk(node, parent) {
     if (++visited > MAX_NODES) { warnings.add("Page is too large; some content was omitted."); return; }
-    if (node.nodeType === Node.TEXT_NODE) { parent.append(out.createTextNode(node.textContent)); return; }
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (textOnly) textParts.push(node.textContent);
+      else parent.append(out.createTextNode(node.textContent));
+      return;
+    }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     const el = node;
     const tag = el.tagName.toUpperCase();
     if (skip.has(tag) || !visible(el) || ["navigation", "toolbar", "menu"].includes(el.getAttribute("role"))) return;
+    if (["IMG", "CANVAS", "SVG"].includes(tag)) {
+      if (textOnly) {
+        textParts.push(`\n[Image: ${el.alt || el.getAttribute("aria-label") || (tag === "SVG" ? "Diagram" : "Page image")}]\n`);
+        return;
+      }
+      if (images.length >= MAX_IMAGES) { warnings.add("Image limit reached (100 per frame)."); return; }
+      if (embeddingFull && tag !== "IMG") {
+        warnings.add("An image or canvas could not be read; try Copy visible page as image.");
+        return;
+      }
+    }
     if (tag === "IMG") {
       addImage(parent, url(el.currentSrc || el.src || el.dataset.src || ""), el.alt, png(el));
       return;
@@ -89,25 +111,36 @@
       finally { clearTimeout(timer); }
       return;
     }
-    const copy = out.createElement(allowed.has(tag) ? tag.toLowerCase() : "span");
-    if (tag === "A") {
+    const copy = textOnly ? null : out.createElement(allowed.has(tag) ? tag.toLowerCase() : "span");
+    if (textOnly && blockTags.has(tag)) textParts.push("\n");
+    if (!textOnly && tag === "A") {
       const href = url(el.getAttribute("href") || "");
       if (/^https?:/.test(href)) copy.setAttribute("href", href);
     }
-    for (const attr of ["colspan", "rowspan", "start"]) {
+    for (const attr of textOnly ? [] : ["colspan", "rowspan", "start"]) {
       if (/^\d{1,3}$/.test(el.getAttribute(attr) || "")) copy.setAttribute(attr, el.getAttribute(attr));
     }
-    parent.append(copy);
+    if (!textOnly) parent.append(copy);
     const children = tag === "SLOT" ? el.assignedNodes({ flatten: true }) : el.shadowRoot?.childNodes || el.childNodes;
     for (const child of children) {
       if (visited >= MAX_NODES) { warnings.add("Page is too large; some content was omitted."); break; }
       await walk(child, copy);
     }
+    if (textOnly) {
+      if (blockTags.has(tag)) textParts.push("\n");
+      else if (tag === "TD" || tag === "TH") textParts.push("\t");
+    }
   }
   // Prefer content landmarks, but only if they contain actual reading material.
   const candidates = [...document.querySelectorAll("main,[role='main'],article,[epub\\:type='chapter']")]
     .filter(el => visibleInTree(el) && ((el.innerText || "").trim().length > 120 || el.querySelector("img,canvas,svg")));
-  const roots = candidates.filter(el => !candidates.some(other => other !== el && other.contains(el)));
+  const candidateSet = new Set(candidates);
+  const roots = candidates.filter(el => {
+    for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+      if (candidateSet.has(parent)) return false;
+    }
+    return true;
+  });
   for (const root of roots.length ? roots : [document.body]) await walk(root, holder);
 
   function plain(node) {
@@ -117,6 +150,6 @@
     const content = [...node.childNodes].map(plain).join("");
     return blockTags.has(node.tagName) ? `\n${content}\n` : node.tagName === "TD" || node.tagName === "TH" ? content + "\t" : content;
   }
-  const text = plain(holder).replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  return { html: holder.innerHTML, text, images, warnings: [...warnings], title: document.title, url: location.href, top: window === window.top };
+  const text = (textOnly ? textParts.join("") : plain(holder)).replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { html: textOnly ? "" : holder.innerHTML, text, images, warnings: [...warnings], title: document.title, url: location.href, top: window === window.top };
 })();

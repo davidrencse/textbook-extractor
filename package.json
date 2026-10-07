@@ -5,13 +5,15 @@
   "scripts": {
     "test": "node --test tests/extension.test.cjs",
     "lint": "web-ext lint --source-dir extension --warnings-as-errors",
-    "build": "web-ext build --source-dir extension --artifacts-dir dist --overwrite-dest"
+    "build": "web-ext build --source-dir extension --artifacts-dir dist --overwrite-dest",
+    "build:chrome": "node build.mjs",
+    "build:all": "npm run build && npm run build:chrome"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
-  "description": "One-click Zen/Firefox page text and image clipboard extension",
+  "description": "One-click cross-browser (Chromium + Firefox/Zen) page text and image clipboard extension",
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "web-ext": "^10.7.0"

@@ -5,6 +5,8 @@ const http = require('node:http');
 const { chromium } = require('@playwright/test');
 const extractor = fs.readFileSync('extension/extract.js', 'utf8');
 const background = fs.readFileSync('extension/background.js', 'utf8');
+const offscreen = fs.readFileSync('chrome/offscreen.js', 'utf8');
+const chromeBackground = fs.readFileSync('chrome/background.js', 'utf8');
 let server, browser, context, base;
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 before(async () => {
@@ -184,3 +186,155 @@ test('empty pages fail explicitly without overwriting clipboard', async () => {
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), 'Keep my clipboard');
   await page.close();
 });
+
+test('text extraction preserves formatting without creating a document or rendering images', async () => {
+  const page = await pageWith(`<main><h1>Chapter</h1><p>${'Reading material '.repeat(12)}</p>
+    <table><tr><td>One</td><td>Two</td></tr></table><div id="shadow"></div>
+    <img src="${base}/image.png" alt="Figure"><canvas width="10" height="10"></canvas>
+    <svg width="10" height="10"><rect width="10" height="10"/></svg></main>`);
+  await page.evaluate(() => document.querySelector('#shadow').attachShadow({ mode: 'open' }).innerHTML = '<p>Shadow text</p>');
+  const rich = await page.evaluate(extractor);
+  await page.evaluate(() => {
+    globalThis.__pageToClipboardTextOnly = true;
+    document.implementation.createHTMLDocument = () => { throw new Error('Unused output DOM'); };
+    HTMLCanvasElement.prototype.toDataURL = () => { throw new Error('Unexpected encoding'); };
+    HTMLImageElement.prototype.decode = () => { throw new Error('Unexpected decode'); };
+  });
+  const text = await page.evaluate(extractor);
+  assert.equal(text.text, rich.text);
+  assert.equal(text.html, '');
+  assert.deepEqual(text.images, []);
+  assert.deepEqual(text.warnings, []);
+  assert.equal(await page.evaluate(() => '__pageToClipboardTextOnly' in globalThis), false);
+  await page.close();
+});
+
+test('image cap stops encoding and SVG cloning before discarded work', async () => {
+  const page = await pageWith('<canvas width="2" height="2"></canvas>'.repeat(150) + '<svg width="10" height="10"></svg>');
+  await page.evaluate(() => {
+    window.encodes = 0;
+    const encode = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(...args) { encodes++; return encode.apply(this, args); };
+    document.querySelector('svg').cloneNode = () => { throw new Error('SVG beyond cap was cloned'); };
+  });
+  const result = await page.evaluate(extractor);
+  assert.equal(result.images.length, 100);
+  assert.equal(await page.evaluate(() => encodes), 100);
+  assert.match(result.warnings.join(' '), /Image limit/);
+  await page.close();
+});
+
+test('landmark selection keeps siblings and excludes nested roots without all-pairs comparisons', async () => {
+  const page = await pageWith('<nav>Noise</nav>' + Array.from({ length: 1000 }, (_, i) => `<article><main><p>Entry ${i} ${'Reading '.repeat(20)}</p></main></article>`).join(''));
+  await page.evaluate(() => {
+    window.containsCalls = 0;
+    const contains = Node.prototype.contains;
+    Node.prototype.contains = function(...args) { containsCalls++; return contains.apply(this, args); };
+  });
+  const result = await page.evaluate(extractor);
+  assert.equal((result.text.match(/Entry /g) || []).length, 1000);
+  assert.doesNotMatch(result.text, /Noise/);
+  assert.ok(await page.evaluate(() => containsCalls) < 10000);
+  await page.close();
+});
+
+test('exhausted embedding budget stops rendering and retains image URL fallback', async () => {
+  const page = await pageWith('<canvas width="2" height="2"></canvas>'.repeat(4) + `<img src="${base}/image.png" alt="Fallback"><svg width="10" height="10"></svg>`);
+  await page.evaluate(() => {
+    window.encodes = 0;
+    HTMLCanvasElement.prototype.toDataURL = () => { encodes++; return 'x'.repeat(12 * 1024 * 1024); };
+    document.querySelector('svg').cloneNode = () => { throw new Error('SVG beyond budget was cloned'); };
+  });
+  const result = await page.evaluate(async source => {
+    const res = await (0, eval)(source);
+    return { encodes, images: res.images.map(i => ({ source: i.source, size: i.embedded.length })) };
+  }, extractor);
+  assert.equal(result.encodes, 2);
+  assert.equal(result.images.length, 3);
+  assert.deepEqual(result.images[2], { source: `${base}/image.png`, size: 0 });
+  await page.close();
+});
+
+for (const engine of ['firefox', 'chromium']) {
+  test(`${engine} text-only orchestration passes the mode and bypasses HTML assembly`, async () => {
+    const page = await pageWith(`<p>Fast text</p><img src="${base}/image.png" alt="Figure">`);
+    if (engine === 'firefox') {
+      await loadBackground(page, []);
+      await page.evaluate(source => {
+        browser.tabs.executeScript = async (_id, options) => [await (0, eval)(options.code || source)];
+      }, extractor);
+    } else {
+      await page.evaluate(source => {
+        window.chrome = {
+          runtime: { onMessage: { addListener: fn => { window.offscreenHandler = fn; } } }
+        };
+        window.extractorSource = source;
+      }, extractor);
+      // Separate lexical scope, as these scripts normally live in separate documents.
+      await page.addScriptTag({ content: `(() => { ${offscreen}\n})();` });
+      await page.evaluate(() => {
+        chrome.action = { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {}, setTitle: async () => {}, onClicked: { addListener: () => {} } };
+        chrome.contextMenus = { onClicked: { addListener: fn => { window.menuClick = fn; } } };
+        chrome.runtime.onInstalled = { addListener: () => {} };
+        chrome.runtime.getContexts = async () => [{}];
+        chrome.runtime.sendMessage = msg => new Promise(resolve => offscreenHandler(msg, {}, resolve));
+        chrome.scripting = { executeScript: async options => [{ result: options.func ? options.func(...options.args) : await (0, eval)(extractorSource) }] };
+      });
+      await page.addScriptTag({ content: `(() => { ${chromeBackground}\n})();` });
+    }
+    await page.evaluate(() => {
+      document.implementation.createHTMLDocument = () => { throw new Error('Unexpected extraction DOM'); };
+      DOMParser.prototype.parseFromString = () => { throw new Error('Unexpected HTML parse'); };
+      const create = document.createElement.bind(document);
+      document.createElement = (...args) => { if (args[0] === 'article') throw new Error('Unused article'); return create(...args); };
+      HTMLCanvasElement.prototype.toDataURL = () => { throw new Error('Unexpected encoding'); };
+    });
+    await page.evaluate(() => navigator.clipboard.writeText('Text-only copy has not run'));
+    await page.evaluate(async base => { await menuClick({ menuItemId: 'copy-text' }, { id: 1, title: 'Chapter', url: base }); }, base);
+    assert.match(await page.evaluate(() => navigator.clipboard.readText()), /Fast text\s+\[Image: Figure\]/);
+    await page.close();
+  });
+
+  test(`${engine} image workers refill free slots while preserving order and caching`, async () => {
+    const page = await pageWith('');
+    const frame = { text: 'Images', html: Array.from({ length: 7 }, (_, i) => `<img data-clip-image="${i}" alt="${i}">`).join(''),
+      images: [0, 1, 2, 3, 4, 4, 5].map(i => ({ source: `https://images.test/${i}`, embedded: '', alt: String(i) })), warnings: [], url: base };
+    if (engine === 'firefox') await loadBackground(page, [frame]);
+    else {
+      await page.evaluate(() => { window.chrome = { runtime: { onMessage: { addListener: () => {} } } }; });
+      await page.addScriptTag({ content: offscreen });
+    }
+    await page.evaluate(({ frame, engine, base }) => {
+      window.started = [];
+      window.active = 0;
+      window.peak = 0;
+      window.release = {};
+      imageData = source => {
+        started.push(source);
+        peak = Math.max(peak, ++active);
+        return new Promise((resolve, reject) => {
+          release[source] = fail => { active--; fail ? reject(new Error('Missing image')) : resolve('data:image/png;base64,AA=='); };
+        });
+      };
+      window.assembly = engine === 'firefox' ? assemble({ id: 1, title: 'Images', url: base }, false) : assemble({ frames: [frame], title: 'Images', url: base }, false);
+    }, { frame, engine, base });
+    await page.waitForFunction(() => started.length === 4);
+    await page.evaluate(() => release['https://images.test/1']());
+    await page.waitForFunction(() => started.includes('https://images.test/4'));
+    // The slow first request is still pending; the fifth has already started.
+    assert.equal(await page.evaluate(() => active), 4);
+    await page.evaluate(() => { release['https://images.test/2'](true); release['https://images.test/3'](); });
+    await page.waitForFunction(() => started.includes('https://images.test/5'));
+    await page.evaluate(() => { release['https://images.test/0'](); release['https://images.test/4'](); release['https://images.test/5'](); });
+    const result = await page.evaluate(async () => {
+      const res = await assembly;
+      return { html: res.article?.outerHTML || res.html, count: res.imageCount, warnings: [...res.warnings], started, peak };
+    });
+    assert.equal(result.peak, 4);
+    assert.equal(result.started.filter(s => s.endsWith('/4')).length, 1);
+    assert.equal(result.count, 6);
+    assert.match(result.warnings.join(' '), /1 image\(s\)/);
+    assert.deepEqual([...result.html.matchAll(/alt="(\d)"/g)].map(m => m[1]), ['0', '1', '3', '4', '5', '6']);
+    await page.close();
+  });
+}
